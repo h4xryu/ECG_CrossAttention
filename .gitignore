@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Data files (large files)
+data/
+dataset/
+*.npy
+*.dat
+*.atr
+*.xws
+*.hea
+
+# Results and model weights
+ECG_Results/
+*.pth
+*.pt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment
+.env
+venv/
+env/
+
+# Temp
+temp/
+*.log
+
