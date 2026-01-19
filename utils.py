@@ -85,7 +85,7 @@ def get_rr_feature_function(option: str):
     RR feature 옵션에 따라 적절한 함수 반환
     
     Args:
-        option: "opt1", "opt2", "opt3"
+        option: "opt1", "opt2", "opt3", "opt4"
     
     Returns:
         feature extraction function
@@ -94,6 +94,7 @@ def get_rr_feature_function(option: str):
         "opt1": compute_rr_features_opt1,  # 7 features (basic)
         "opt2": compute_rr_features_opt2,  # 38 features (full + morphology)
         "opt3": compute_rr_features_opt3,  # 7 features (basic2)
+        "opt4": compute_rr_features_opt4,  # 7 features (numerically stable)
     }
     
     if option not in functions:
@@ -1123,6 +1124,134 @@ def compute_rr_features_opt3(
 
     
     return all_features
+
+
+def compute_rr_features_opt4(
+    ecg_signal: np.ndarray, 
+    r_peaks: np.ndarray, 
+    fs: int = 360
+) -> np.ndarray:
+    """
+    Numerically Stable RR features (7 features)
+    
+    수치적 안정성을 최대화한 feature 설계:
+    - 뺄셈 연산 제거 (cancellation error 방지)
+    - 비율(ratio) 기반으로 스케일 불변
+    - bounded range로 정규화
+    - exp/log 변환 제거
+    
+    Features:
+        [0] pre_rr_norm     - 정규화된 현재 RR (global mean으로 나눔, clipped)
+        [1] post_rr_norm    - 정규화된 다음 RR
+        [2] local_rr_norm   - 정규화된 local mean RR
+        [3] pre_div_post    - RR_i / RR_{i+1} (연속 비율)
+        [4] pre_div_local   - RR_i / local_mean (local 대비 비율)
+        [5] local_cv        - Local CV (std/mean, 스케일 불변 변동성)
+        [6] rr_stability    - 연속 3개 RR의 안정성 지표
+    
+    Returns:
+        features: (n_beats, 7) array
+    """
+    n_beats = len(r_peaks)
+    
+    # Convert to ms units
+    ms_factor = 1000.0 / fs
+    
+    # Initialize arrays
+    pre_rr = np.zeros(n_beats, dtype=np.float32)
+    post_rr = np.zeros(n_beats, dtype=np.float32)
+    local_rr = np.zeros(n_beats, dtype=np.float32)
+    local_std = np.zeros(n_beats, dtype=np.float32)
+    
+    # =========================================================================
+    # Step 1: 기본 RR 간격 계산
+    # =========================================================================
+    for i in range(n_beats):
+        # Pre RR (현재 RR)
+        if i > 0:
+            pre_rr[i] = (r_peaks[i] - r_peaks[i-1]) * ms_factor
+        else:
+            pre_rr[i] = 800.0  # default
+        
+        # Post RR (다음 RR)
+        if i < n_beats - 1:
+            post_rr[i] = (r_peaks[i+1] - r_peaks[i]) * ms_factor
+        else:
+            post_rr[i] = pre_rr[i]  # 마지막은 현재와 동일
+        
+        # Local RR mean & std (지난 10개 beat)
+        start = max(0, i - 9)
+        rr_window = pre_rr[start:i+1]
+        
+        if len(rr_window) >= 1:
+            local_rr[i] = np.mean(rr_window)
+            local_std[i] = np.std(rr_window) if len(rr_window) >= 2 else 0.0
+        else:
+            local_rr[i] = 800.0
+            local_std[i] = 0.0
+    
+    # =========================================================================
+    # Step 2: Global 통계량 계산 (수치적으로 안정된 방식)
+    # =========================================================================
+    # 극단값 제외한 robust mean
+    valid_rr = pre_rr[(pre_rr > 200) & (pre_rr < 2000)]  # 200ms~2000ms 범위
+    
+    if len(valid_rr) > 0:
+        global_rr_mean = np.median(valid_rr)  # mean 대신 median 사용 (robust)
+    else:
+        global_rr_mean = 800.0
+    
+    # Epsilon: global mean의 1% (스케일에 맞게 조정)
+    epsilon = max(global_rr_mean * 0.01, 1.0)
+    
+    # =========================================================================
+    # Step 3: 수치적으로 안정된 Feature 계산
+    # =========================================================================
+    
+    # [0] pre_rr_norm: 정규화된 현재 RR (0.1 ~ 10 범위로 clip)
+    pre_rr_norm = np.clip(pre_rr / global_rr_mean, 0.1, 10.0)
+    
+    # [1] post_rr_norm: 정규화된 다음 RR
+    post_rr_norm = np.clip(post_rr / global_rr_mean, 0.1, 10.0)
+    
+    # [2] local_rr_norm: 정규화된 local mean
+    local_rr_norm = np.clip(local_rr / global_rr_mean, 0.1, 10.0)
+    
+    # [3] pre_div_post: 연속 RR 비율 (0.1 ~ 10 범위로 clip)
+    pre_div_post = np.clip(pre_rr / np.maximum(post_rr, epsilon), 0.1, 10.0)
+    
+    # [4] pre_div_local: 현재 RR / local mean (local 대비 비율)
+    pre_div_local = np.clip(pre_rr / np.maximum(local_rr, epsilon), 0.1, 10.0)
+    
+    # [5] local_cv: Coefficient of Variation (std/mean, 0~1 범위)
+    # CV는 스케일 불변이고 수치적으로 안정
+    local_cv = np.clip(local_std / np.maximum(local_rr, epsilon), 0.0, 1.0)
+    
+    # [6] rr_stability: 연속 3개 RR의 안정성 (max/min ratio, 1~10 범위)
+    # 값이 1에 가까울수록 안정, 클수록 불안정
+    rr_stability = np.ones(n_beats, dtype=np.float32)
+    for i in range(1, n_beats - 1):
+        rr_triplet = np.array([pre_rr[i-1], pre_rr[i], post_rr[i]])
+        rr_triplet = rr_triplet[rr_triplet > epsilon]
+        if len(rr_triplet) >= 2:
+            rr_stability[i] = np.clip(np.max(rr_triplet) / np.min(rr_triplet), 1.0, 10.0)
+    
+    # =========================================================================
+    # Stack features
+    # =========================================================================
+    all_features = np.stack([
+        pre_rr_norm,      # [0] 정규화된 현재 RR
+        post_rr_norm,     # [1] 정규화된 다음 RR
+        local_rr_norm,    # [2] 정규화된 local mean
+        pre_div_post,     # [3] 연속 RR 비율
+        pre_div_local,    # [4] local 대비 비율
+        local_cv,         # [5] Local CV (변동성)
+        rr_stability,     # [6] 연속 RR 안정성
+    ], axis=1).astype(np.float32)
+    
+    return all_features
+
+
 # =============================================================================
 # Beat Extraction
 # =============================================================================

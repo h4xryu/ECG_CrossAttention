@@ -44,8 +44,8 @@ POLY2_EPS = 0.0
 CLASSES = ['N', 'S', 'V', 'F']
 
 # RR Feature 설정
-RR_FEATURE_OPTION = "opt3"
-RR_FEATURE_DIMS = {"opt1": 7, "opt2": 38, "opt3": 7}
+RR_FEATURE_OPTION = "opt4"  # numerically stable features
+RR_FEATURE_DIMS = {"opt1": 7, "opt2": 38, "opt3": 7, "opt4": 7}
 
 # 모델 설정
 MODEL_CONFIG = {
