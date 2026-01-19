@@ -21,15 +21,34 @@ CACHE_DIR = './dataset'
 # Seed Setting
 # =============================================================================
 
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, fully_deterministic: bool = True) -> None:
+    """
+    랜덤 시드 설정
+    
+    Args:
+        seed: 랜덤 시드
+        fully_deterministic: True면 완전 결정론적 (느림), False면 기본 설정
+    """
+    import os
     import torch
+    
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    
     if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+    
+    # 기본 cuDNN 설정
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    
+    if fully_deterministic:
+        # PyTorch 1.8+ 완전 결정론적 모드
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+        if hasattr(torch, 'use_deterministic_algorithms'):
+            torch.use_deterministic_algorithms(True, warn_only=True)
 
 
 # =============================================================================

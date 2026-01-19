@@ -181,12 +181,16 @@ def run_experiment(exp_name, model_type, data_config, device):
     valid_dataset = ECGDataset(valid_data, valid_rr, valid_labels, valid_pid, valid_sid)
     test_dataset = ECGDataset(test_data, test_rr, test_labels, test_pid, test_sid)
     
+    # DataLoader (재현성을 위해 worker_init_fn 추가)
+    def worker_init_fn(worker_id):
+        np.random.seed(SEED + worker_id)
+    
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
-                              num_workers=4, pin_memory=True)
+                              num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn)
     valid_loader = DataLoader(valid_dataset, batch_size=BATCH_SIZE, shuffle=False,
-                              num_workers=4, pin_memory=True)
+                              num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False,
-                             num_workers=4, pin_memory=True)
+                             num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn)
     
     print(f"  Train: {len(train_labels):,} samples | {dict(Counter(train_labels))}")
     print(f"  Valid: {len(valid_labels):,} samples | {dict(Counter(valid_labels))}")
