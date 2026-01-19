@@ -99,11 +99,16 @@ EXPERIMENTS = [
     
     # B 시리즈 (Dense Block 없음) - * 설정
     ('B0*', 'baseline_B', 'star'),
+    
     ('B1*', 'naive_concatenate_B', 'star'),
     ('B2*', 'cross_attention_B', 'star'),
     
     # @ 설정 (DS1-1/DS1-2 split)
     ('A1@', 'naive_concatenate', 'at'),
+    ('A2@', 'cross_attention', 'at'),
+    ('A0@', 'baseline', 'at'),
+    ('B1@', 'naive_concatenate_B', 'at'),
+    ('B0@', 'baseline_B', 'at'),
     ('B2@', 'cross_attention_B', 'at'),
 ]
 
