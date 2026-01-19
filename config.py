@@ -14,7 +14,7 @@ from datetime import datetime
 #   "cross_attention-v2"    - Cross-Attention 버전2
 #
 # 지원 모델: baseline, naive_concatenate, cross_attention
-EXP_NAME = "naive_concatenate_B1_star"
+EXP_NAME = "baseline_A1_at"
 
 
 def get_model_type(exp_name: str) -> str:
@@ -109,7 +109,7 @@ LABEL_GROUP_MAP = {
 # =============================================================================
 DS1_TRAIN = [
     '101', '106', '108', '109', '112', '115', '116', '118', '119',
-    '122', '201', '203', '209', '215', '223', '230', '208' ,             '114', '124', '205', '207', '220' 
+    '122', '201', '203', '209', '215', '223', '230', '208' ,           
 ]
 DS1_VALID = [
     '114', '124', '205', '207', '220'
