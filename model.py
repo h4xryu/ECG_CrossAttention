@@ -25,8 +25,9 @@ def get_model(exp_name: str, nOUT: int, n_pid: int, **config):
     EXP_NAME에 따라 적절한 모델 반환
     
     Args:
-        exp_name: "baseline", "baseline-xxx", "cross_attention-v2" 등
-                  모델 타입이 포함된 이름 (하이픈 뒤는 실험 구분용)
+        exp_name: 모델 타입이 포함된 이름
+                  A 시리즈 (Dense Block 포함): baseline_A, naive_concatenate_A, cross_attention_A
+                  B 시리즈 (Dense Block 없음): baseline_B, naive_concatenate_B, cross_attention_B
         nOUT: 출력 클래스 수 (4: N, S, V, F)
         n_pid: 환자 수 (현재 미사용, 인터페이스 유지용)
         **config: MODEL_CONFIG (in_channels, out_ch, mid_ch, num_heads, n_rr)
@@ -34,11 +35,22 @@ def get_model(exp_name: str, nOUT: int, n_pid: int, **config):
     Returns:
         model: 해당 모델 인스턴스
     """
-    models = {
+    # B 시리즈 (Dense Block 없음) 먼저 체크
+    models_b = {
+        "baseline_B": ResU_baseline_NoDense,
+        "naive_concatenate_B": ResU_naive_concatenate_NoDense,
+        "cross_attention_B": ResU_CrossAttention_NoDense,
+    }
+    
+    # A 시리즈 (Dense Block 포함) - 기본값
+    models_a = {
         "baseline": ResU_Dense_baseline,
         "naive_concatenate": ResU_Dense_naive_concatenate,
         "cross_attention": ResU_Dense_CrossAttention,
     }
+    
+    # 전체 모델 딕셔너리
+    models = {**models_b, **models_a}
     
     # exp_name에서 모델 타입 추출 (baseline-xxx -> baseline)
     model_type = None
@@ -307,5 +319,146 @@ class ResU_Dense_CrossAttention(nn.Module):
         z = z.squeeze(0)  # (B, E)
         
         # RR concatenate for residual connection
+        logits = self.fc(z)
+        return logits, attn
+
+
+# =============================================================================
+# B Series: Models WITHOUT Dense Block (simpler architecture)
+# =============================================================================
+
+class ResU_baseline_NoDense(nn.Module):
+    """
+    B0: Baseline model without Dense Block - ECG only
+    ResU Block -> AvgPool -> Linear
+    """
+    def __init__(self, nOUT, n_pid,
+                 in_channels=1, out_ch=180, mid_ch=30, n_rr=7, num_heads=9):
+        super().__init__()
+        
+        # ECG Encoder (no Dense Block)
+        self.conv = nn.Conv1d(in_channels, out_ch, 15, padding=7, stride=2, bias=False)
+        self.bn = nn.BatchNorm1d(out_ch)
+        self.rub_0 = ResidualUBlock(out_ch, mid_ch, layers=4)
+        self.rub_1 = ResidualUBlock(out_ch, mid_ch, layers=3, downsampling=False)
+        
+        # Global Average Pooling
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
+        
+        # Classifier
+        self.fc = nn.Sequential(
+            nn.Linear(out_ch, 360),
+            nn.LayerNorm(360),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(360, nOUT)
+        )
+
+    def forward(self, ecg_signal, rr_features, rr_remove_ablation=False):
+        # ECG encoding
+        x = F.leaky_relu(self.bn(self.conv(ecg_signal)))
+        x = self.rub_0(x)
+        x = self.rub_1(x)
+        
+        # Global average pooling
+        z = self.avgpool(x).squeeze(-1)  # (B, C)
+        
+        logits = self.fc(z)
+        return logits, None
+
+
+class ResU_naive_concatenate_NoDense(nn.Module):
+    """
+    B1: Naive Concatenate without Dense Block
+    ECG AvgPool + RR concat -> Linear
+    """
+    def __init__(self, nOUT, n_pid,
+                 in_channels=1, out_ch=180, mid_ch=30, n_rr=7, num_heads=9):
+        super().__init__()
+        
+        # ECG Encoder (no Dense Block)
+        self.conv = nn.Conv1d(in_channels, out_ch, 15, padding=7, stride=2, bias=False)
+        self.bn = nn.BatchNorm1d(out_ch)
+        self.rub_0 = ResidualUBlock(out_ch, mid_ch, layers=4)
+        self.rub_1 = ResidualUBlock(out_ch, mid_ch, layers=3, downsampling=False)
+        
+        # Global Average Pooling
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
+        
+        # Classifier (ECG + RR)
+        self.fc = nn.Sequential(
+            nn.Linear(out_ch + n_rr, 360),
+            nn.LayerNorm(360),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(360, nOUT)
+        )
+
+    def forward(self, ecg_signal, rr_features, rr_remove_ablation=False):
+        # ECG encoding
+        x = F.leaky_relu(self.bn(self.conv(ecg_signal)))
+        x = self.rub_0(x)
+        x = self.rub_1(x)
+        
+        # Global average pooling
+        z = self.avgpool(x).squeeze(-1)  # (B, C)
+        
+        # RR concatenate
+        if rr_remove_ablation:
+            rr_features = torch.zeros_like(rr_features)
+        
+        logits = self.fc(torch.cat([z, rr_features], dim=1))
+        return logits, None
+
+
+class ResU_CrossAttention_NoDense(nn.Module):
+    """
+    B2: Cross-Attention without Dense Block
+    RR Query attends to ECG sequence -> AvgPool -> Linear
+    """
+    def __init__(self, nOUT, n_pid,
+                 in_channels=1, out_ch=180, mid_ch=30, n_rr=7, num_heads=9):
+        super().__init__()
+        
+        # ECG Encoder (no Dense Block)
+        self.conv = nn.Conv1d(in_channels, out_ch, 15, padding=7, stride=2, bias=False)
+        self.bn = nn.BatchNorm1d(out_ch)
+        self.rub_0 = ResidualUBlock(out_ch, mid_ch, layers=4)
+        self.rub_1 = ResidualUBlock(out_ch, mid_ch, layers=3, downsampling=False)
+        
+        # RR Encoder
+        self.rr_encoder = nn.Linear(n_rr, out_ch)
+        
+        # Cross-Attention (Query: RR, Key/Value: ECG)
+        self.mha_cross = nn.MultiheadAttention(out_ch, num_heads, dropout=0.2)
+        
+        # Post-attention processing
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
+        
+        # Classifier
+        self.fc = nn.Sequential(
+            nn.Linear(out_ch, 360),
+            nn.LayerNorm(360),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(360, nOUT)
+        )
+
+    def forward(self, ecg_signal, rr_features, rr_remove_ablation=False):
+        # ECG encoding
+        x = F.leaky_relu(self.bn(self.conv(ecg_signal)))
+        x = self.rub_0(x)
+        x = self.rub_1(x)
+        x_seq = x.permute(2, 0, 1)  # (L, B, C)
+        
+        # RR encoding -> Query
+        rr_emb = self.rr_encoder(rr_features).unsqueeze(0)  # (1, B, C)
+        if rr_remove_ablation:
+            rr_emb = torch.zeros_like(rr_emb)
+        
+        # Cross-attention
+        z, attn = self.mha_cross(rr_emb, x_seq, x_seq)
+        z = z.squeeze(0)  # (B, C)
+        
         logits = self.fc(z)
         return logits, attn
