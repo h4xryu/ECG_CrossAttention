@@ -204,8 +204,9 @@ def run_experiment(exp_name, model_type, data_config, device):
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
     
-    # Best 모델 추적 (AUROC 기준)
+    # Best 모델 추적 (AUROC 기준) - @ 실험용
     best_auroc = {'value': 0.0, 'epoch': 0, 'state_dict': None}
+    last_state_dict = None  # * 실험용 (마지막 에폭)
     
     # 학습 루프
     for epoch in range(1, EPOCHS + 1):
@@ -214,37 +215,61 @@ def run_experiment(exp_name, model_type, data_config, device):
             model, train_loader, POLY1_EPS, POLY2_EPS, optimizer, device
         )
         
-        # Validation
-        valid_loss, valid_metrics, *_ = validate(
-            model, valid_loader, POLY1_EPS, POLY2_EPS, device
-        )
-        
-        # Best AUROC 체크
-        if valid_metrics['macro_auroc'] > best_auroc['value']:
-            best_auroc = {
-                'value': valid_metrics['macro_auroc'],
-                'epoch': epoch,
-                'state_dict': copy.deepcopy(model.state_dict())
-            }
-            print(f"  Epoch {epoch}: New best AUROC = {best_auroc['value']:.4f}")
+        # Validation (@ 실험에서만 의미 있음)
+        if data_config == 'at':
+            valid_loss, valid_metrics, *_ = validate(
+                model, valid_loader, POLY1_EPS, POLY2_EPS, device
+            )
+            
+            # Best AUROC 체크
+            if valid_metrics['macro_auroc'] > best_auroc['value']:
+                best_auroc = {
+                    'value': valid_metrics['macro_auroc'],
+                    'epoch': epoch,
+                    'state_dict': copy.deepcopy(model.state_dict())
+                }
+                print(f"  Epoch {epoch}: New best AUROC = {best_auroc['value']:.4f}")
+            
+            if epoch % 10 == 0:
+                print(f"  Epoch {epoch}/{EPOCHS} - Train Loss: {train_loss:.4f}, "
+                      f"Valid AUROC: {valid_metrics['macro_auroc']:.4f}")
+        else:
+            # * 실험: validation 없이 학습만
+            if epoch % 10 == 0:
+                print(f"  Epoch {epoch}/{EPOCHS} - Train Loss: {train_loss:.4f}, "
+                      f"Train Acc: {train_metrics['acc']:.4f}")
         
         scheduler.step()
         
-        if epoch % 10 == 0:
-            print(f"  Epoch {epoch}/{EPOCHS} - Train Loss: {train_loss:.4f}, "
-                  f"Valid AUROC: {valid_metrics['macro_auroc']:.4f}")
+        # 마지막 에폭 state_dict 저장 (* 실험용)
+        if epoch == EPOCHS:
+            last_state_dict = copy.deepcopy(model.state_dict())
     
-    # Best 모델 저장
-    best_path = os.path.join(exp_dir, 'best_weights', f'best_auroc_{exp_name}.pth')
-    torch.save({
-        'model_state_dict': best_auroc['state_dict'],
-        'epoch': best_auroc['epoch'],
-        'auroc': best_auroc['value']
-    }, best_path)
-    print(f"\n  Best model saved (epoch {best_auroc['epoch']}, AUROC {best_auroc['value']:.4f})")
+    # 모델 선택 및 저장
+    if data_config == 'star':
+        # * 실험: 마지막 에폭 (50 에폭) weight 사용
+        final_state_dict = last_state_dict
+        final_epoch = EPOCHS
+        save_path = os.path.join(exp_dir, 'best_weights', f'last_epoch_{exp_name}.pth')
+        torch.save({
+            'model_state_dict': final_state_dict,
+            'epoch': final_epoch,
+        }, save_path)
+        print(f"\n  Last epoch model saved (epoch {final_epoch})")
+    else:
+        # @ 실험: best AUROC epoch weight 사용
+        final_state_dict = best_auroc['state_dict']
+        final_epoch = best_auroc['epoch']
+        save_path = os.path.join(exp_dir, 'best_weights', f'best_auroc_{exp_name}.pth')
+        torch.save({
+            'model_state_dict': final_state_dict,
+            'epoch': final_epoch,
+            'auroc': best_auroc['value']
+        }, save_path)
+        print(f"\n  Best AUROC model saved (epoch {final_epoch}, AUROC {best_auroc['value']:.4f})")
     
-    # Best 모델로 테스트
-    model.load_state_dict(best_auroc['state_dict'])
+    # 선택된 모델로 테스트
+    model.load_state_dict(final_state_dict)
     model.eval()
     
     y_pred, y_true, _ = evaluate(model, test_loader, device)
