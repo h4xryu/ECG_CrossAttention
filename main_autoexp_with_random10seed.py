@@ -122,8 +122,8 @@ EXPERIMENTS = [
 
 METRIC_KEYS = [
     'overall_accuracy',
-    'macro_accuracy', 'macro_recall', 'macro_specificity', 'macro_prec', 'macro_f1', 'macro_auroc', 'macro_auprc',
-    'weighted_accuracy', 'weighted_recall', 'weighted_specificity', 'weighted_prec', 'weighted_f1', 'weighted_auroc', 'weighted_auprc',
+    'macro_accuracy', 'macro_recall', 'macro_specificity', 'macro_prec', 'macro_f1',
+    'weighted_accuracy', 'weighted_recall', 'weighted_specificity', 'weighted_prec', 'weighted_f1',
 ]
 
 PER_CLASS_METRIC_KEYS = [
@@ -293,8 +293,6 @@ def save_summary_excel(all_results, output_path):
                 'Specificity': format_mean_std(mean['macro_specificity'], std['macro_specificity']),
                 'Precision': format_mean_std(mean['macro_prec'], std['macro_prec']),
                 'F1': format_mean_std(mean['macro_f1'], std['macro_f1']),
-                'AUROC': format_mean_std(mean['macro_auroc'], std['macro_auroc']),
-                'AUPRC': format_mean_std(mean['macro_auprc'], std['macro_auprc']),
             })
         df_macro = pd.DataFrame(macro_data)
         df_macro.to_excel(writer, sheet_name='Macro', index=False)
@@ -313,8 +311,6 @@ def save_summary_excel(all_results, output_path):
                 'Specificity': format_mean_std(mean['weighted_specificity'], std['weighted_specificity']),
                 'Precision': format_mean_std(mean['weighted_prec'], std['weighted_prec']),
                 'F1': format_mean_std(mean['weighted_f1'], std['weighted_f1']),
-                'AUROC': format_mean_std(mean['weighted_auroc'], std['weighted_auroc']),
-                'AUPRC': format_mean_std(mean['weighted_auprc'], std['weighted_auprc']),
             })
         df_weighted = pd.DataFrame(weighted_data)
         df_weighted.to_excel(writer, sheet_name='Weighted', index=False)
@@ -354,8 +350,6 @@ def save_summary_excel(all_results, output_path):
                     'Macro_Spec': metrics['macro_specificity'],
                     'Macro_Prec': metrics['macro_prec'],
                     'Macro_F1': metrics['macro_f1'],
-                    'Macro_AUROC': metrics['macro_auroc'],
-                    'Macro_AUPRC': metrics['macro_auprc'],
                 })
         df_raw = pd.DataFrame(raw_data)
         df_raw.to_excel(writer, sheet_name='Raw_Data', index=False)
@@ -376,16 +370,16 @@ def save_summary_excel(all_results, output_path):
             naive_f1 = [r['macro_f1'] for r in all_results[naive_exp]['raw']]
             cross_f1 = [r['macro_f1'] for r in all_results[cross_exp]['raw']]
             
-            naive_auroc = [r['macro_auroc'] for r in all_results[naive_exp]['raw']]
-            cross_auroc = [r['macro_auroc'] for r in all_results[cross_exp]['raw']]
+            naive_acc = [r['overall_accuracy'] for r in all_results[naive_exp]['raw']]
+            cross_acc = [r['overall_accuracy'] for r in all_results[cross_exp]['raw']]
             
             # t-test
             try:
                 from scipy import stats
                 t_stat_f1, p_value_f1 = stats.ttest_ind(naive_f1, cross_f1)
-                t_stat_auroc, p_value_auroc = stats.ttest_ind(naive_auroc, cross_auroc)
+                t_stat_acc, p_value_acc = stats.ttest_ind(naive_acc, cross_acc)
             except ImportError:
-                p_value_f1 = p_value_auroc = float('nan')
+                p_value_f1 = p_value_acc = float('nan')
             
             comparison_data.append({
                 'Comparison': comp_name,
@@ -395,12 +389,12 @@ def save_summary_excel(all_results, output_path):
                 'Cross_F1_std': np.std(cross_f1),
                 'F1_Diff': np.mean(cross_f1) - np.mean(naive_f1),
                 'F1_p-value': p_value_f1,
-                'Naive_AUROC_mean': np.mean(naive_auroc),
-                'Naive_AUROC_std': np.std(naive_auroc),
-                'Cross_AUROC_mean': np.mean(cross_auroc),
-                'Cross_AUROC_std': np.std(cross_auroc),
-                'AUROC_Diff': np.mean(cross_auroc) - np.mean(naive_auroc),
-                'AUROC_p-value': p_value_auroc,
+                'Naive_Acc_mean': np.mean(naive_acc),
+                'Naive_Acc_std': np.std(naive_acc),
+                'Cross_Acc_mean': np.mean(cross_acc),
+                'Cross_Acc_std': np.std(cross_acc),
+                'Acc_Diff': np.mean(cross_acc) - np.mean(naive_acc),
+                'Acc_p-value': p_value_acc,
             })
         
         df_comparison = pd.DataFrame(comparison_data)
@@ -518,7 +512,7 @@ if __name__ == '__main__':
                 )
                 seed_results.append(metrics)
                 exp_time = time.time() - exp_start
-                print(f"F1={metrics['macro_f1']:.4f}, AUROC={metrics['macro_auroc']:.4f} ({exp_time/60:.1f}min)")
+                print(f"F1={metrics['macro_f1']:.4f}, Acc={metrics['overall_accuracy']:.4f} ({exp_time/60:.1f}min)")
             except Exception as e:
                 print(f"Error: {e}")
                 import traceback
@@ -536,7 +530,6 @@ if __name__ == '__main__':
             # 중간 결과 출력
             print(f"\n  📊 {exp_name} Results (n={len(seed_results)}):")
             print(f"     Macro F1: {format_mean_std(mean_dict['macro_f1'], std_dict['macro_f1'])}")
-            print(f"     Macro AUROC: {format_mean_std(mean_dict['macro_auroc'], std_dict['macro_auroc'])}")
             print(f"     Overall Acc: {format_mean_std(mean_dict['overall_accuracy'], std_dict['overall_accuracy'])}")
     
     total_time = (time.time() - total_start) / 60
