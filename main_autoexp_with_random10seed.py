@@ -111,9 +111,9 @@ EXPERIMENTS = [
     ('A2@', 'cross_attention', 'at'),
     
     # B 시리즈 - @ 설정
-    ('B0@', 'baseline_B', 'at'),
     ('B1@', 'naive_concatenate_B', 'at'),
     ('B2@', 'cross_attention_B', 'at'),
+    # Note: B0@는 엑셀 양식에 없어서 제외
 ]
 
 # =============================================================================
