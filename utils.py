@@ -44,11 +44,7 @@ def set_seed(seed: int, fully_deterministic: bool = True) -> None:
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     
-    if fully_deterministic:
-        # PyTorch 1.8+ 완전 결정론적 모드
-        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
-        if hasattr(torch, 'use_deterministic_algorithms'):
-            torch.use_deterministic_algorithms(True, warn_only=True)
+
 
 
 # =============================================================================
