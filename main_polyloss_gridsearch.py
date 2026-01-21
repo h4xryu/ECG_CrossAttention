@@ -41,7 +41,7 @@ CLASSES = ['N', 'S', 'V', 'F']
 
 
 # 모델 설정 (config.py의 EXP_NAME에 따라 모델 선택)
-BASE_MODEL = 'cross_attention'  # baseline, naive_concatenate, cross_attention, *_B
+BASE_MODEL = 'cross_attention_B'  # baseline, naive_concatenate, cross_attention, *_B
 RR_FEATURE_OPTION = "opt3"
 RR_FEATURE_DIMS = {"opt1": 7, "opt2": 38, "opt3": 7, "opt4": 7}
 
