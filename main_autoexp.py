@@ -44,7 +44,7 @@ POLY2_EPS = 0.0
 CLASSES = ['N', 'S', 'V', 'F']
 
 # RR Feature 설정
-RR_FEATURE_OPTION = "opt4"  # numerically stable features
+RR_FEATURE_OPTION = "opt3"  # numerically stable features
 RR_FEATURE_DIMS = {"opt1": 7, "opt2": 38, "opt3": 7, "opt4": 7}
 
 # 모델 설정
@@ -93,23 +93,12 @@ DS2_TEST = [
 # 데이터설정: 'star' = DS1 전체, 'at' = DS1-1/DS1-2 split
 EXPERIMENTS = [
     # A 시리즈 (Dense Block 포함) - * 설정
-    ('A0*', 'baseline', 'star'),
-    ('A1*', 'naive_concatenate', 'star'),
-    ('A2*', 'cross_attention', 'star'),
-    
-    # B 시리즈 (Dense Block 없음) - * 설정
-    ('B0*', 'baseline_B', 'star'),
-    
-    ('B1*', 'naive_concatenate_B', 'star'),
-    ('B2*', 'cross_attention_B', 'star'),
     
     # @ 설정 (DS1-1/DS1-2 split)
-    ('A1@', 'naive_concatenate', 'at'),
-    ('A2@', 'cross_attention', 'at'),
-    ('A0@', 'baseline', 'at'),
+    ('B2@', 'cross_attention_B', 'at'),
     ('B1@', 'naive_concatenate_B', 'at'),
     ('B0@', 'baseline_B', 'at'),
-    ('B2@', 'cross_attention_B', 'at'),
+    
 ]
 
 # =============================================================================
@@ -180,17 +169,20 @@ def run_experiment(exp_name, model_type, data_config, device):
     train_dataset = ECGDataset(train_data, train_rr, train_labels, train_pid, train_sid)
     valid_dataset = ECGDataset(valid_data, valid_rr, valid_labels, valid_pid, valid_sid)
     test_dataset = ECGDataset(test_data, test_rr, test_labels, test_pid, test_sid)
-    
-    # DataLoader (재현성을 위해 worker_init_fn 추가)
-    def worker_init_fn(worker_id):
-        np.random.seed(SEED + worker_id)
-    
+
+
+
+
+
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
-                              num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn)
+                              num_workers=4, pin_memory=True)
     valid_loader = DataLoader(valid_dataset, batch_size=BATCH_SIZE, shuffle=False,
-                              num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn)
+                              num_workers=4, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False,
-                             num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn)
+                             num_workers=4, pin_memory=True)
+
+    print(f"  Train: {len(train_labels):,} samples | {dict(Counter(train_labels))}")
+    print(f"  Valid: {len(valid_labels):,} samples | {dict(Counter(valid_labels))}")
     
     print(f"  Train: {len(train_labels):,} samples | {dict(Counter(train_labels))}")
     print(f"  Valid: {len(valid_labels):,} samples | {dict(Counter(valid_labels))}")
