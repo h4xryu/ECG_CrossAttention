@@ -875,60 +875,36 @@ def compute_rr_features_opt2(
 
 
 def compute_rr_features_opt3(
-    ecg_signal: np.ndarray, 
-    r_peaks: np.ndarray, 
+    ecg_signal: np.ndarray,
+    r_peaks: np.ndarray,
     fs: int = 360
 ) -> np.ndarray:
     """
-    Basic RR features with global context (7 features)
-    
+    기존 실험용 RR features (7 features) - Cross-Attention 연구
+
     Features:
         [0] pre_rr         - Current RR interval (ms)
         [1] post_rr        - Next RR interval (ms)
         [2] local_rr       - Local mean RR (last 10 beats)
         [3] pre_div_post   - RR_i / RR_{i+1}
         [4] global_rr      - Global RR mean
-        [5] pre_minus_global- RR_i - global_RR
+        [5] pre_minus_global - RR_i - global_RR
         [6] pre_div_global - RR_i / global_RR
-    
+
     Returns:
         features: (n_beats, 7) array
     """
     n_beats = len(r_peaks)
-    
+
     # Convert to ms units
     ms_factor = 1000.0 / fs
-    
-    # =========================================================================
-    # Part 1: RR Interval Features (original 26 features)
-    # =========================================================================
-    
+
     # Initialize RR arrays
     pre_rr = np.zeros(n_beats, dtype=np.float32)
     post_rr = np.zeros(n_beats, dtype=np.float32)
     local_rr = np.zeros(n_beats, dtype=np.float32)
-    local_rmssd = np.zeros(n_beats, dtype=np.float32)
-    local_std = np.zeros(n_beats, dtype=np.float32)
-    global_skew = np.zeros(n_beats, dtype=np.float32)
-    global_kurt = np.zeros(n_beats, dtype=np.float32)
-    
-    rr_cur_div_avg = np.zeros(n_beats, dtype=np.float32)
-    rr_post_div_cur = np.zeros(n_beats, dtype=np.float32)
-    rr_pre_div_cur = np.zeros(n_beats, dtype=np.float32)
-    rr_post_div_avg = np.zeros(n_beats, dtype=np.float32)
-    
-    tr_half = np.zeros(n_beats, dtype=np.float32)
-    tr_quarter = np.zeros(n_beats, dtype=np.float32)
-    tr_half_norm = np.zeros(n_beats, dtype=np.float32)
-    tr_quarter_norm = np.zeros(n_beats, dtype=np.float32)
-    
-    rr_global_normalized = np.zeros(n_beats, dtype=np.float32)
-    rr1_squared = np.zeros(n_beats, dtype=np.float32)
-    rr2_exp = np.zeros(n_beats, dtype=np.float32)
-    rr3_exp_inv = np.zeros(n_beats, dtype=np.float32)
-    rr4_log = np.zeros(n_beats, dtype=np.float32)
-    
-    # Pre RR and Post RR
+
+    # Pre RR and Post RR 계산
     for i in range(n_beats):
         if i > 0:
             pre_rr[i] = (r_peaks[i] - r_peaks[i-1]) * ms_factor
@@ -937,7 +913,7 @@ def compute_rr_features_opt3(
                 pre_rr[i] = (r_peaks[1] - r_peaks[0]) * ms_factor
             else:
                 pre_rr[i] = 800.0
-        
+
         if i < n_beats - 1:
             post_rr[i] = (r_peaks[i+1] - r_peaks[i]) * ms_factor
         else:
@@ -945,180 +921,45 @@ def compute_rr_features_opt3(
                 post_rr[i] = (r_peaks[-1] - r_peaks[-2]) * ms_factor
             else:
                 post_rr[i] = 800.0
-    
-    # Local statistics
+
+    # Local statistics (last 10 beats)
     for i in range(n_beats):
         start_idx = max(0, i - 9)
         window = pre_rr[start_idx:i+1]
         if len(window) > 0:
             local_rr[i] = np.mean(window)
-            local_std[i] = np.std(window) if len(window) > 1 else 0.0
         else:
             local_rr[i] = pre_rr[i]
-            local_std[i] = 0.0
-    
-    # Local RMSSD
-    for i in range(n_beats):
-        start = max(0, i - 9)
-        rr_window = pre_rr[start:i+1]
-        
-        if len(rr_window) >= 2:
-            diff_rr = np.diff(rr_window)
-            local_rmssd[i] = np.sqrt(np.mean(diff_rr ** 2))
-        else:
-            local_rmssd[i] = 0.0
-    
+
     # Global statistics
     valid_pre_rr = pre_rr[pre_rr > 50]
-    
+
     if len(valid_pre_rr) > 1:
         global_rr_mean = np.mean(valid_pre_rr)
-        global_rr_std = np.std(valid_pre_rr)
-        global_rmssd_value = np.sqrt(np.mean(np.diff(valid_pre_rr) ** 2))
-        
-        if len(valid_pre_rr) >= 3:
-            from scipy.stats import skew, kurtosis
-            global_skew_value = float(skew(valid_pre_rr))
-            global_kurt_value = float(kurtosis(valid_pre_rr)) if len(valid_pre_rr) >= 4 else 0.0
-        else:
-            global_skew_value = 0.0
-            global_kurt_value = 0.0
     else:
         global_rr_mean = 800.0
-        global_rr_std = 50.0
-        global_rmssd_value = 50.0
-        global_skew_value = 0.0
-        global_kurt_value = 0.0
-    
+
+    # global_rr 배열 생성 (버그 수정: 실제 값 할당)
     global_rr = np.full(n_beats, global_rr_mean, dtype=np.float32)
-    global_rr_std_arr = np.full(n_beats, global_rr_std, dtype=np.float32)
-    global_rmssd = np.full(n_beats, global_rmssd_value, dtype=np.float32)
-    global_skew[:] = global_skew_value
-    global_kurt[:] = global_kurt_value
-    
+
     # Derived features
     epsilon = 1.0
-    
+
+    pre_div_post = pre_rr / np.maximum(post_rr, epsilon)
     pre_minus_global = pre_rr - global_rr
     pre_div_global = pre_rr / np.maximum(global_rr, epsilon)
-    pre_div_post = pre_rr / np.maximum(post_rr, epsilon)
-    
-    # RR ratio features
-    rr_cur_div_avg = pre_rr / np.maximum(global_rr, epsilon)
-    rr_post_div_cur = post_rr / np.maximum(pre_rr, epsilon)
-    
-    for i in range(n_beats):
-        if i > 0:
-            prev_prev_rr = (r_peaks[i-1] - r_peaks[i-2]) * ms_factor if i > 1 else pre_rr[i]
-            rr_pre_div_cur[i] = prev_prev_rr / max(pre_rr[i], epsilon)
-        else:
-            rr_pre_div_cur[i] = 1.0
-    
-    rr_post_div_avg = post_rr / np.maximum(global_rr, epsilon)
-    
-    # Temporal features
-    for i in range(n_beats):
-        if i < n_beats - 1:
-            tr_half[i] = post_rr[i] / 2.0
-            tr_quarter[i] = post_rr[i] / 4.0
-            
-            tr_half_norm[i] = tr_half[i] / max(global_rr_mean, epsilon)
-            tr_quarter_norm[i] = tr_quarter[i] / max(global_rr_mean, epsilon)
-        else:
-            tr_half[i] = post_rr[i] / 2.0
-            tr_quarter[i] = post_rr[i] / 4.0
-            tr_half_norm[i] = tr_half[i] / max(global_rr_mean, epsilon)
-            tr_quarter_norm[i] = tr_quarter[i] / max(global_rr_mean, epsilon)
-    
-    # RR_global transformations
-    rr_global_normalized = pre_rr / np.maximum(global_rr, epsilon)
-    rr_global_clipped = np.clip(rr_global_normalized, 0.01, 100.0)
-    
-    rr1_squared = rr_global_clipped ** 2
-    rr2_exp = np.exp(np.clip(rr_global_clipped, -10, 10))
-    rr3_exp_inv = np.exp(np.clip(1.0 / rr_global_clipped, -10, 10))
-    rr4_log = np.log(rr_global_clipped)
-    
-    # =========================================================================
-    # Part 2: Morphological Features (PR interval, QRS width) - NEW
-    # =========================================================================
-    
-    # Initialize morphological arrays
-    pr_interval = np.zeros(n_beats, dtype=np.float32)
-    qrs_width = np.zeros(n_beats, dtype=np.float32)
-    
-    local_pr_mean = np.zeros(n_beats, dtype=np.float32)
-    local_pr_std = np.zeros(n_beats, dtype=np.float32)
-    local_qrs_mean = np.zeros(n_beats, dtype=np.float32)
-    local_qrs_std = np.zeros(n_beats, dtype=np.float32)
-    
-    global_pr_mean = np.zeros(n_beats, dtype=np.float32)
-    global_pr_std = np.zeros(n_beats, dtype=np.float32)
-    global_qrs_mean = np.zeros(n_beats, dtype=np.float32)
-    global_qrs_std = np.zeros(n_beats, dtype=np.float32)
-    
-    pr_normalized = np.zeros(n_beats, dtype=np.float32)
-    qrs_normalized = np.zeros(n_beats, dtype=np.float32)
-    
-    try:
-    #     #
-        # ---------------------------------------------------------------------
-        # Local statistics (last 10 beats window)
-        # ---------------------------------------------------------------------
-        for i in range(n_beats):
-            start_idx = max(0, i - 9)
-            
-            # PR local stats
-            pr_window = pr_interval[start_idx:i+1]
-            if len(pr_window) > 0:
-                local_pr_mean[i] = np.mean(pr_window)
-                local_pr_std[i] = np.std(pr_window) if len(pr_window) > 1 else 0.0
-            else:
-                local_pr_mean[i] = pr_interval[i]
-                local_pr_std[i] = 0.0
-            
-            # QRS local stats
-            qrs_window = qrs_width[start_idx:i+1]
-            if len(qrs_window) > 0:
-                local_qrs_mean[i] = np.mean(qrs_window)
-                local_qrs_std[i] = np.std(qrs_window) if len(qrs_window) > 1 else 0.0
-            else:
-                local_qrs_mean[i] = qrs_width[i]
-                local_qrs_std[i] = 0.0
-        
-        # ---------------------------------------------------------------------
 
-    except Exception as e:
-        # Use default values if delineation fails
-        pr_interval[:] = 160.0
-        qrs_width[:] = 100.0
-        local_pr_mean[:] = 160.0
-        local_qrs_mean[:] = 100.0
-        global_pr_mean[:] = 160.0
-        global_qrs_mean[:] = 100.0
-        pr_normalized[:] = 1.0
-        qrs_normalized[:] = 1.0
-    
-    # =========================================================================
-    # Stack all features (n_beats, 38) — GROUPED BY SEMANTIC ROLE
-    # =========================================================================
-
+    # Stack all features (n_beats, 7)
     all_features = np.stack([
-
-
-        pre_rr,               # [0]  Current RR interval
-        post_rr,              # [1]  Next RR interval
-        local_rr,             # [2]  Local mean RR (last 10 beats)
-        pre_div_post,         # [7]  RR_i / RR_{i+1}
-        global_rr,            # [8]  Global RR mean
-        pre_minus_global,     # [13] RR_i - global_RR
-        pre_div_global,       # [14] RR_i / global_RR
-        # rr_cur_div_avg,       # [15] RR_i / global_RR (duplicate but explicit)
-
-   
+        pre_rr,            # [0] Current RR interval
+        post_rr,           # [1] Next RR interval
+        local_rr,          # [2] Local mean RR (last 10 beats)
+        pre_div_post,      # [3] RR_i / RR_{i+1}
+        global_rr,         # [4] Global RR mean
+        pre_minus_global,  # [5] RR_i - global_RR
+        pre_div_global,    # [6] RR_i / global_RR
     ], axis=1).astype(np.float32)
 
-    
     return all_features
 
 

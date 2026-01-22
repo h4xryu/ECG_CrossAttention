@@ -26,8 +26,10 @@ def get_model(exp_name: str, nOUT: int, n_pid: int, **config):
     
     Args:
         exp_name: 모델 타입이 포함된 이름
-                  A 시리즈 (Dense Block 포함): baseline_A, naive_concatenate_A, cross_attention_A
-                  B 시리즈 (Dense Block 없음): baseline_B, naive_concatenate_B, cross_attention_B
+                  Improved 시리즈 (Multi-kernel ResNet - 기본): 
+                    - baseline_improved, naive_concatenate_improved, cross_attention_improved
+                    - baseline, naive_concatenate, cross_attention (동일하게 매핑됨)
+                  
         nOUT: 출력 클래스 수 (4: N, S, V, F)
         n_pid: 환자 수 (현재 미사용, 인터페이스 유지용)
         **config: MODEL_CONFIG (in_channels, out_ch, mid_ch, num_heads, n_rr)
@@ -35,35 +37,28 @@ def get_model(exp_name: str, nOUT: int, n_pid: int, **config):
     Returns:
         model: 해당 모델 인스턴스
     """
-    # B 시리즈 (Dense Block 없음) 먼저 체크
-    models_b = {
-        "baseline_B": ResU_baseline_NoDense,
-        "naive_concatenate_B": ResU_naive_concatenate_NoDense,
-        "cross_attention_B": ResU_CrossAttention_NoDense,
+    # Improved 시리즈 (Multi-kernel Residual Blocks) - 기본 모델
+    models_improved = {
+        "baseline": ImprovedDeepResidualCNN_baseline,
+        "naive_concatenate": ImprovedDeepResidualCNN_naive_concatenate,
+        "cross_attention": ImprovedDeepResidualCNN_CrossAttention,
+        "baseline_improved": ImprovedDeepResidualCNN_baseline,
+        "naive_concatenate_improved": ImprovedDeepResidualCNN_naive_concatenate,
+        "cross_attention_improved": ImprovedDeepResidualCNN_CrossAttention,
     }
     
-    # A 시리즈 (Dense Block 포함) - 기본값
-    models_a = {
-        "baseline": ResU_Dense_baseline,
-        "naive_concatenate": ResU_Dense_naive_concatenate,
-        "cross_attention": ResU_Dense_CrossAttention,
-    }
-    
-    # 전체 모델 딕셔너리
-    models = {**models_b, **models_a}
-    
-    # exp_name에서 모델 타입 추출 (baseline-xxx -> baseline)
+    # exp_name에서 모델 타입 추출
     model_type = None
-    for mt in models.keys():
+    for mt in models_improved.keys():
         if mt in exp_name:
             model_type = mt
             break
     
     if model_type is None:
         raise ValueError(f"Unknown model in exp_name: '{exp_name}'. "
-                         f"Must contain one of: {list(models.keys())}")
+                         f"Must contain one of: {list(models_improved.keys())}")
     
-    model_class = models[model_type]
+    model_class = models_improved[model_type]
     model = model_class(nOUT=nOUT, n_pid=n_pid, **config)
     
     n_params = sum(p.numel() for p in model.parameters())
@@ -177,228 +172,228 @@ class ResidualUBlock(nn.Module):
 
 
 # =============================================================================
-# Model 1: Baseline (ECG only, RR 미사용)
+# DEPRECATED: Old Models (A & B Series) - Replaced with Improved Architecture
+# =============================================================================
+# 이전 모델들 (ResU_Dense_*, ResU_*_NoDense)은 새로운 
+# ImprovedDeepResidualCNN 모델로 통합되었습니다.
+# 
+# 기본 모델은 다음과 같이 매핑됩니다:
+#  - "baseline" → ImprovedDeepResidualCNN_baseline
+#  - "naive_concatenate" → ImprovedDeepResidualCNN_naive_concatenate
+#  - "cross_attention" → ImprovedDeepResidualCNN_CrossAttention
+
+
+# =============================================================================
+# Improved Deep Residual CNN (Paper Architecture)
+# Multi-kernel Residual Blocks with Cross-Attention
 # =============================================================================
 
-class ResU_Dense_baseline(nn.Module):
+class MultiKernelConvBlock(nn.Module):
     """
-    Baseline model - ECG 신호만 사용, RR feature 미사용
-    Self-Attention으로 ECG temporal pattern 학습
+    Convolution block with multiple kernel sizes (improved perception of different scales)
+    Kernel sizes: [base_kernel_size, base_kernel_size+8, base_kernel_size+14]
+    Each with num_kernels filters
     """
-    def __init__(self, nOUT, n_pid,
-                 in_channels=1, out_ch=180, mid_ch=30, n_rr=7, num_heads=9):
+    def __init__(self, in_channels: int, num_kernels: int, base_kernel_size: int = 28):
+        super().__init__()
+        kernel_sizes = [base_kernel_size, base_kernel_size + 8, base_kernel_size + 14]
+        
+        self.convs = nn.ModuleList()
+        for k_size in kernel_sizes:
+            self.convs.append(
+                nn.Conv1d(in_channels, num_kernels, kernel_size=k_size, 
+                         padding=k_size//2, bias=False)
+            )
+        self.bn = nn.BatchNorm1d(num_kernels * len(kernel_sizes))
+        self.relu = nn.ReLU(inplace=True)
+    
+    def forward(self, x):
+        outputs = [conv(x) for conv in self.convs]
+        out = torch.cat(outputs, dim=1)
+        out = self.bn(out)
+        out = self.relu(out)
+        return out
+
+
+class ImprovedResidualBlock(nn.Module):
+    """
+    Improved Residual Block with multi-kernel convolutions
+    Each block contains 2 conv layers with different kernel combinations
+    """
+    def __init__(self, in_channels: int, base_kernel_size_1: int, 
+                 base_kernel_size_2: int, num_kernels: int, downsample: bool = False):
         super().__init__()
         
-        # ECG Encoder
-        self.conv = nn.Conv1d(in_channels, out_ch, 15, padding=7, stride=2, bias=False)
-        self.bn = nn.BatchNorm1d(out_ch)
-        self.rub_0 = ResidualUBlock(out_ch, mid_ch, layers=4)
-        self.rub_1 = ResidualUBlock(out_ch, mid_ch, layers=3)
+        self.downsample_flag = downsample
         
-        # Self-Attention
-        self.mha_ecg = nn.MultiheadAttention(out_ch, num_heads, dropout=0.2)
+        # First multi-kernel conv layer
+        self.conv_block1 = MultiKernelConvBlock(in_channels, num_kernels, base_kernel_size_1)
+        out_ch_1 = num_kernels * 3  # 3 kernel sizes
         
-        # Classifier
-        self.fc = nn.Sequential(
-            nn.Linear(out_ch, 360),
-            nn.LayerNorm(360),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            nn.Linear(360, nOUT)
-        )
-
-    def forward(self, ecg_signal, rr_features, rr_remove_ablation=False):
-        # ECG encoding
-        x = F.leaky_relu(self.bn(self.conv(ecg_signal)))
-        x = self.rub_0(x)
-        x = self.rub_1(x)
-        x_seq = x.permute(2, 0, 1)  # (L, B, E)
+        # Dropout
+        self.dropout1 = nn.Dropout(0.5)
         
-        # Self-attention (RR 미사용)
-        z, attn = self.mha_ecg(x_seq, x_seq, x_seq)
-        z = z.mean(dim=0)  # (B, E)
+        # Second multi-kernel conv layer
+        self.conv_block2 = MultiKernelConvBlock(out_ch_1, num_kernels, base_kernel_size_2)
+        out_ch_2 = num_kernels * 3  # 3 kernel sizes
         
-        logits = self.fc(z)
-        return logits, attn
+        # Dropout
+        self.dropout2 = nn.Dropout(0.5)
+        
+        # 1x1 conv to match dimensions for residual connection
+        self.conv_1x1 = nn.Conv1d(in_channels, out_ch_2, kernel_size=1, bias=False)
+        self.bn_1x1 = nn.BatchNorm1d(out_ch_2)
+        
+        # Downsampling (Max Pooling)
+        if downsample:
+            self.maxpool = nn.MaxPool1d(kernel_size=2, stride=2)
+    
+    def forward(self, x):
+        # Save input for residual
+        identity = x
+        
+        # First conv block
+        out = self.conv_block1(x)
+        out = self.dropout1(out)
+        
+        # Second conv block
+        out = self.conv_block2(out)
+        out = self.dropout2(out)
+        
+        # Residual connection (adjust identity dimensions if needed)
+        identity = self.conv_1x1(identity)
+        identity = self.bn_1x1(identity)
+        
+        out = out + identity
+        
+        # Downsampling
+        if self.downsample_flag:
+            out = self.maxpool(out)
+        
+        return out
 
 
-# =============================================================================
-# Model 2: Naive Concatenate (ECG + RR 단순 결합)
-# =============================================================================
-
-class ResU_Dense_naive_concatenate(nn.Module):
+class ImprovedDeepResidualCNN_baseline(nn.Module):
     """
-    ECG Self-Attention 결과와 RR feature를 단순 concatenate
+    B1_improved: Improved Deep Residual CNN (Baseline - ECG only)
+    
+    Architecture:
+    - Initial conv: 28, 36, 42 kernel sizes
+    - 8 residual blocks with multi-kernel convolutions
+    - Every other block downsamples by 2x (total: 2^4 = 16x)
+    - Each block has 2 conv layers with 3 different kernel sizes each
+    - Cross-layer connections (shortcut) with Max Pooling
     """
-    def __init__(self, nOUT, n_pid,
-                 in_channels=1, out_ch=180, mid_ch=30, n_rr=7, num_heads=9):
+    def __init__(self, nOUT, n_pid, in_channels=1, out_ch=48, mid_ch=None, n_rr=7, num_heads=9):
         super().__init__()
+        self.out_ch = out_ch
         
-        # ECG Encoder
-        self.conv = nn.Conv1d(in_channels, out_ch, 15, padding=7, stride=2, bias=False)
-        self.bn = nn.BatchNorm1d(out_ch)
-        self.rub_0 = ResidualUBlock(out_ch, mid_ch, layers=4)
-        self.rub_1 = ResidualUBlock(out_ch, mid_ch, layers=3)
+        # Initial convolution with multiple kernel sizes
+        self.initial_conv = MultiKernelConvBlock(in_channels, out_ch // 3, base_kernel_size=28)
         
-        # Self-Attention
-        self.mha_ecg = nn.MultiheadAttention(out_ch, num_heads, dropout=0.2)
+        # 8 Residual blocks
+        self.residual_blocks = nn.ModuleList()
         
-        # Classifier (ECG + RR)
-        self.fc = nn.Sequential(
-            nn.Linear(out_ch+n_rr, 360),
-            nn.LayerNorm(360),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            nn.Linear(360, nOUT)
-        )
-
-    def forward(self, ecg_signal, rr_features, rr_remove_ablation=False):
-        # ECG encoding
-        x = F.leaky_relu(self.bn(self.conv(ecg_signal)))
-        x = self.rub_0(x)
-        x = self.rub_1(x)
-        x_seq = x.permute(2, 0, 1)  # (L, B, E)
+        # Kernel size configurations for each block
+        # Block i uses 4k kernels where k increments every 2 blocks
+        kernel_configs = [
+            (32, 34),   # Block 0, k=1
+            (32, 34),   # Block 1, k=1
+            (30, 36),   # Block 2, k=2
+            (30, 36),   # Block 3, k=2
+            (30, 36),   # Block 4, k=2
+            (30, 36),   # Block 5, k=2
+            (30, 36),   # Block 6, k=3
+            (30, 36),   # Block 7, k=3
+        ]
         
-        # Self-attention
-        z, attn = self.mha_ecg(x_seq, x_seq, x_seq)
-        z = z.mean(dim=0)  # (B, E)
+        in_ch = out_ch * 3  # Output from initial conv (3 kernels)
+        for i, (k1, k2) in enumerate(kernel_configs):
+            downsample = (i % 2 == 1)  # Every other block downsamples
+            block = ImprovedResidualBlock(in_ch, k1, k2, out_ch, downsample=downsample)
+            self.residual_blocks.append(block)
+            in_ch = out_ch * 3  # Next input channel = current output channel
         
-        # RR concatenate
-        logits = self.fc(torch.cat([z, rr_features], dim=1))
-        return logits, attn
-
-
-# =============================================================================
-# Model 3: Cross-Attention (RR → ECG attention)
-# =============================================================================
-
-class ResU_Dense_CrossAttention(nn.Module):
-    """
-    RR feature를 Query로 사용하여 ECG sequence에 Cross-Attention
-    RR 정보가 ECG의 어느 부분에 주목할지 학습
-    """
-    def __init__(self, nOUT, n_pid,
-                 in_channels=1, out_ch=180, mid_ch=30, n_rr=7, num_heads=9):
-        super().__init__()
-        
-        # ECG Encoder
-        self.conv = nn.Conv1d(in_channels, out_ch, 15, padding=7, stride=2, bias=False)
-        self.bn = nn.BatchNorm1d(out_ch)
-        self.rub_0 = ResidualUBlock(out_ch, mid_ch, layers=4)
-        self.rub_1 = ResidualUBlock(out_ch, mid_ch, layers=3)
-        
-        # RR Encoder (RR -> Query embedding)
-        self.rr_encoder = nn.Linear(n_rr, out_ch)
-        
-        # Cross-Attention (Query: RR, Key/Value: ECG)
-        self.mha_ecg = nn.MultiheadAttention(out_ch, num_heads, dropout=0.2)
-        
-        # Classifier
-        self.fc = nn.Sequential(
-            nn.Linear(out_ch, 360),
-            nn.LayerNorm(360),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            nn.Linear(360, nOUT)
-        )
-
-    def forward(self, ecg_signal, rr_features, rr_remove_ablation=False):
-        # ECG encoding
-        x = F.leaky_relu(self.bn(self.conv(ecg_signal)))
-        x = self.rub_0(x)
-        x = self.rub_1(x)
-        x_seq = x.permute(2, 0, 1)  # (L, B, E)
-        
-        # RR encoding -> Query
-        rr_emb = self.rr_encoder(rr_features).unsqueeze(0)  # (1, B, E)
-        if rr_remove_ablation:
-            rr_emb = torch.zeros_like(rr_emb)
-        
-        # Cross-attention (RR attends to ECG)
-        z, attn = self.mha_ecg(rr_emb, x_seq, x_seq)
-        z = z.squeeze(0)  # (B, E)
-        
-        # RR concatenate for residual connection
-        logits = self.fc(z)
-        return logits, attn
-
-
-# =============================================================================
-# B Series: Models WITHOUT Dense Block (simpler architecture)
-# =============================================================================
-
-class ResU_baseline_NoDense(nn.Module):
-    """
-    B0: Baseline model without Dense Block - ECG only
-    ResU Block -> AvgPool -> Linear
-    """
-    def __init__(self, nOUT, n_pid,
-                 in_channels=1, out_ch=180, mid_ch=30, n_rr=7, num_heads=9):
-        super().__init__()
-        
-        # ECG Encoder (no Dense Block)
-        self.conv = nn.Conv1d(in_channels, out_ch, 15, padding=7, stride=2, bias=False)
-        self.bn = nn.BatchNorm1d(out_ch)
-        self.rub_0 = ResidualUBlock(out_ch, mid_ch, layers=4)
-        self.rub_1 = ResidualUBlock(out_ch, mid_ch, layers=3, downsampling=False)
-        
-        # Global Average Pooling
+        # Global average pooling
         self.avgpool = nn.AdaptiveAvgPool1d(1)
         
         # Classifier
         self.fc = nn.Sequential(
-            nn.Linear(out_ch, 360),
+            nn.Linear(out_ch * 3, 360),
             nn.LayerNorm(360),
             nn.GELU(),
             nn.Dropout(0.2),
             nn.Linear(360, nOUT)
         )
-
+    
     def forward(self, ecg_signal, rr_features, rr_remove_ablation=False):
-        # ECG encoding
-        x = F.leaky_relu(self.bn(self.conv(ecg_signal)))
-        x = self.rub_0(x)
-        x = self.rub_1(x)
+        # Initial conv
+        x = self.initial_conv(ecg_signal)
+        
+        # Residual blocks
+        for block in self.residual_blocks:
+            x = block(x)
         
         # Global average pooling
         z = self.avgpool(x).squeeze(-1)  # (B, C)
         
+        # Classification
         logits = self.fc(z)
         return logits, None
 
 
-class ResU_naive_concatenate_NoDense(nn.Module):
+class ImprovedDeepResidualCNN_naive_concatenate(nn.Module):
     """
-    B1: Naive Concatenate without Dense Block
-    ECG AvgPool + RR concat -> Linear
+    B1_improved: Improved Deep Residual CNN (Naive Concatenate)
+    ECG processing + simple RR concatenation
     """
-    def __init__(self, nOUT, n_pid,
-                 in_channels=1, out_ch=180, mid_ch=30, n_rr=7, num_heads=9):
+    def __init__(self, nOUT, n_pid, in_channels=1, out_ch=48, mid_ch=None, n_rr=7, num_heads=9):
         super().__init__()
+        self.out_ch = out_ch
         
-        # ECG Encoder (no Dense Block)
-        self.conv = nn.Conv1d(in_channels, out_ch, 15, padding=7, stride=2, bias=False)
-        self.bn = nn.BatchNorm1d(out_ch)
-        self.rub_0 = ResidualUBlock(out_ch, mid_ch, layers=4)
-        self.rub_1 = ResidualUBlock(out_ch, mid_ch, layers=3, downsampling=False)
+        # Initial convolution with multiple kernel sizes
+        self.initial_conv = MultiKernelConvBlock(in_channels, out_ch // 3, base_kernel_size=28)
         
-        # Global Average Pooling
+        # 8 Residual blocks
+        self.residual_blocks = nn.ModuleList()
+        
+        kernel_configs = [
+            (32, 34),   # Block 0
+            (32, 34),   # Block 1
+            (30, 36),   # Block 2
+            (30, 36),   # Block 3
+            (30, 36),   # Block 4
+            (30, 36),   # Block 5
+            (30, 36),   # Block 6
+            (30, 36),   # Block 7
+        ]
+        
+        in_ch = out_ch * 3
+        for i, (k1, k2) in enumerate(kernel_configs):
+            downsample = (i % 2 == 1)
+            block = ImprovedResidualBlock(in_ch, k1, k2, out_ch, downsample=downsample)
+            self.residual_blocks.append(block)
+            in_ch = out_ch * 3
+        
+        # Global average pooling
         self.avgpool = nn.AdaptiveAvgPool1d(1)
         
         # Classifier (ECG + RR)
         self.fc = nn.Sequential(
-            nn.Linear(out_ch + n_rr, 360),
+            nn.Linear(out_ch * 3 + n_rr, 360),
             nn.LayerNorm(360),
-            nn.GELU(),
+            nn.LeakyReLU(),
             nn.Dropout(0.2),
             nn.Linear(360, nOUT)
         )
-
+    
     def forward(self, ecg_signal, rr_features, rr_remove_ablation=False):
-        # ECG encoding
-        x = F.leaky_relu(self.bn(self.conv(ecg_signal)))
-        x = self.rub_0(x)
-        x = self.rub_1(x)
+        # Initial conv
+        x = self.initial_conv(ecg_signal)
+        
+        # Residual blocks
+        for block in self.residual_blocks:
+            x = block(x)
         
         # Global average pooling
         z = self.avgpool(x).squeeze(-1)  # (B, C)
@@ -407,48 +402,71 @@ class ResU_naive_concatenate_NoDense(nn.Module):
         if rr_remove_ablation:
             rr_features = torch.zeros_like(rr_features)
         
+        # Classification
         logits = self.fc(torch.cat([z, rr_features], dim=1))
         return logits, None
 
 
-class ResU_CrossAttention_NoDense(nn.Module):
+class ImprovedDeepResidualCNN_CrossAttention(nn.Module):
     """
-    B2: Cross-Attention without Dense Block
-    RR Query attends to ECG sequence -> AvgPool -> Linear
+    B2_improved: Improved Deep Residual CNN (Cross-Attention)
+    RR Query attends to ECG sequence from residual blocks
     """
-    def __init__(self, nOUT, n_pid,
-                 in_channels=1, out_ch=180, mid_ch=30, n_rr=7, num_heads=9):
+    def __init__(self, nOUT, n_pid, in_channels=1, out_ch=48, mid_ch=None, n_rr=7, num_heads=9):
         super().__init__()
+        self.out_ch = out_ch
         
-        # ECG Encoder (no Dense Block)
-        self.conv = nn.Conv1d(in_channels, out_ch, 15, padding=7, stride=2, bias=False)
-        self.bn = nn.BatchNorm1d(out_ch)
-        self.rub_0 = ResidualUBlock(out_ch, mid_ch, layers=4)
-        self.rub_1 = ResidualUBlock(out_ch, mid_ch, layers=3, downsampling=False)
+        # Initial convolution with multiple kernel sizes
+        self.initial_conv = MultiKernelConvBlock(in_channels, out_ch // 3, base_kernel_size=28)
         
-        # RR Encoder
-        self.rr_encoder = nn.Linear(n_rr, out_ch)
+        # 8 Residual blocks
+        self.residual_blocks = nn.ModuleList()
         
-        # Cross-Attention (Query: RR, Key/Value: ECG)
-        self.mha_cross = nn.MultiheadAttention(out_ch, num_heads, dropout=0.2)
+        kernel_configs = [
+            (32, 34),   # Block 0
+            (32, 34),   # Block 1
+            (30, 36),   # Block 2
+            (30, 36),   # Block 3
+            (30, 36),   # Block 4
+            (30, 36),   # Block 5
+            (30, 36),   # Block 6
+            (30, 36),   # Block 7
+        ]
         
-        # Post-attention processing
+        in_ch = out_ch * 3
+        for i, (k1, k2) in enumerate(kernel_configs):
+            downsample = (i % 2 == 1)
+            block = ImprovedResidualBlock(in_ch, k1, k2, out_ch, downsample=downsample)
+            self.residual_blocks.append(block)
+            in_ch = out_ch * 3
+        
+        # RR Encoder -> Query embedding
+        self.rr_encoder = nn.Linear(n_rr, out_ch * 3)
+        
+        # Cross-Attention (Query: RR, Key/Value: ECG sequence)
+        self.mha_cross = nn.MultiheadAttention(out_ch * 3, num_heads, dropout=0.2)
+        
+        # Global average pooling
         self.avgpool = nn.AdaptiveAvgPool1d(1)
         
         # Classifier
         self.fc = nn.Sequential(
-            nn.Linear(out_ch, 360),
+            nn.Linear(out_ch * 3, 360),
             nn.LayerNorm(360),
-            nn.GELU(),
+            nn.LeakyReLU(),
             nn.Dropout(0.2),
             nn.Linear(360, nOUT)
         )
-
+    
     def forward(self, ecg_signal, rr_features, rr_remove_ablation=False):
-        # ECG encoding
-        x = F.leaky_relu(self.bn(self.conv(ecg_signal)))
-        x = self.rub_0(x)
-        x = self.rub_1(x)
+        # Initial conv
+        x = self.initial_conv(ecg_signal)
+        
+        # Residual blocks
+        for block in self.residual_blocks:
+            x = block(x)
+        
+        # Prepare ECG sequence for cross-attention (L, B, C)
         x_seq = x.permute(2, 0, 1)  # (L, B, C)
         
         # RR encoding -> Query
@@ -456,9 +474,10 @@ class ResU_CrossAttention_NoDense(nn.Module):
         if rr_remove_ablation:
             rr_emb = torch.zeros_like(rr_emb)
         
-        # Cross-attention
+        # Cross-attention (RR attends to ECG)
         z, attn = self.mha_cross(rr_emb, x_seq, x_seq)
         z = z.squeeze(0)  # (B, C)
         
+        # Classification
         logits = self.fc(z)
         return logits, attn
