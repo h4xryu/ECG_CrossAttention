@@ -274,210 +274,165 @@ class ImprovedResidualBlock(nn.Module):
 
 
 class ImprovedDeepResidualCNN_baseline(nn.Module):
-    """
-    B1_improved: Improved Deep Residual CNN (Baseline - ECG only)
-    
-    Architecture:
-    - Initial conv: 28, 36, 42 kernel sizes
-    - 8 residual blocks with multi-kernel convolutions
-    - Every other block downsamples by 2x (total: 2^4 = 16x)
-    - Each block has 2 conv layers with 3 different kernel sizes each
-    - Cross-layer connections (shortcut) with Max Pooling
-    """
-    def __init__(self, nOUT, n_pid, in_channels=1, out_ch=48, mid_ch=None, n_rr=7, num_heads=9):
+    def __init__(self, nOUT, n_pid,
+                 in_channels=1, out_ch=48,
+                 n_rr=7,
+                 fusion_type="none",
+                 **fusion_kwargs):
         super().__init__()
-        self.out_ch = out_ch
-        
-        # Initial convolution with multiple kernel sizes
+
         self.initial_conv = MultiKernelConvBlock(in_channels, out_ch // 3, base_kernel_size=28)
-        
-        # 8 Residual blocks
+
         self.residual_blocks = nn.ModuleList()
-        
-        # Kernel size configurations for each block
-        # Block i uses 4k kernels where k increments every 2 blocks
-        kernel_configs = [
-            (32, 34),   # Block 0, k=1
-            (32, 34),   # Block 1, k=1
-            (30, 36),   # Block 2, k=2
-            (30, 36),   # Block 3, k=2
-            (30, 36),   # Block 4, k=2
-            (30, 36),   # Block 5, k=2
-            (30, 36),   # Block 6, k=3
-            (30, 36),   # Block 7, k=3
-        ]
-        
-        in_ch = out_ch * 3  # Output from initial conv (3 kernels)
-        for i, (k1, k2) in enumerate(kernel_configs):
-            downsample = (i % 2 == 1)  # Every other block downsamples
-            block = ImprovedResidualBlock(in_ch, k1, k2, out_ch, downsample=downsample)
-            self.residual_blocks.append(block)
-            in_ch = out_ch * 3  # Next input channel = current output channel
-        
-        # Global average pooling
+        kernel_configs = [(32,34),(32,34),(30,36),(30,36),(30,36),(30,36),(30,36),(30,36)]
+
+        in_ch = out_ch * 3
+        for i,(k1,k2) in enumerate(kernel_configs):
+            downsample = (i % 2 == 1)
+            self.residual_blocks.append(
+                ImprovedResidualBlock(in_ch, k1, k2, out_ch, downsample=downsample)
+            )
+
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-        
-        # Classifier
+
+        # ✅ No fusion
+        self.fusion = None
+        fusion_out_dim = out_ch * 3
+
         self.fc = nn.Sequential(
-            nn.Linear(out_ch * 3, 360),
+            nn.Linear(fusion_out_dim, 360),
             nn.LayerNorm(360),
             nn.GELU(),
             nn.Dropout(0.2),
             nn.Linear(360, nOUT)
         )
-    
-    def forward(self, ecg_signal, rr_features, rr_remove_ablation=False):
-        # Initial conv
+
+    def forward(self, ecg_signal, rr_features=None, rr_remove_ablation=False):
+
         x = self.initial_conv(ecg_signal)
-        
-        # Residual blocks
         for block in self.residual_blocks:
             x = block(x)
-        
-        # Global average pooling
-        z = self.avgpool(x).squeeze(-1)  # (B, C)
-        
-        # Classification
+
+        z = self.avgpool(x).squeeze(-1)  # (B,C)
+
         logits = self.fc(z)
         return logits, None
 
 
 class ImprovedDeepResidualCNN_naive_concatenate(nn.Module):
-    """
-    B1_improved: Improved Deep Residual CNN (Naive Concatenate)
-    ECG processing + simple RR concatenation
-    """
-    def __init__(self, nOUT, n_pid, in_channels=1, out_ch=48, mid_ch=None, n_rr=7, num_heads=9):
+    def __init__(self, nOUT, n_pid,
+                 in_channels=1, out_ch=48,
+                 n_rr=7,
+                 fusion_type="concat",
+                 **fusion_kwargs):
         super().__init__()
-        self.out_ch = out_ch
-        
-        # Initial convolution with multiple kernel sizes
+
         self.initial_conv = MultiKernelConvBlock(in_channels, out_ch // 3, base_kernel_size=28)
-        
-        # 8 Residual blocks
+
         self.residual_blocks = nn.ModuleList()
-        
-        kernel_configs = [
-            (32, 34),   # Block 0
-            (32, 34),   # Block 1
-            (30, 36),   # Block 2
-            (30, 36),   # Block 3
-            (30, 36),   # Block 4
-            (30, 36),   # Block 5
-            (30, 36),   # Block 6
-            (30, 36),   # Block 7
-        ]
-        
+        kernel_configs = [(32,34),(32,34),(30,36),(30,36),(30,36),(30,36),(30,36),(30,36)]
+
         in_ch = out_ch * 3
-        for i, (k1, k2) in enumerate(kernel_configs):
+        for i,(k1,k2) in enumerate(kernel_configs):
             downsample = (i % 2 == 1)
-            block = ImprovedResidualBlock(in_ch, k1, k2, out_ch, downsample=downsample)
-            self.residual_blocks.append(block)
-            in_ch = out_ch * 3
-        
-        # Global average pooling
+            self.residual_blocks.append(
+                ImprovedResidualBlock(in_ch, k1, k2, out_ch, downsample=downsample)
+            )
+
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-        
-        # Classifier (ECG + RR)
+
+        # ✅ Fusion block (Concat)
+        self.fusion = get_fusion_block(
+            fusion_type,
+            emb_dim=out_ch * 3,
+            rr_dim=n_rr,
+            **fusion_kwargs
+        )
+
+        fusion_out_dim = out_ch * 3 + n_rr
+
         self.fc = nn.Sequential(
-            nn.Linear(out_ch * 3 + n_rr, 360),
+            nn.Linear(fusion_out_dim, 360),
             nn.LayerNorm(360),
-            nn.LeakyReLU(),
+            nn.GELU(),
             nn.Dropout(0.2),
             nn.Linear(360, nOUT)
         )
-    
+
     def forward(self, ecg_signal, rr_features, rr_remove_ablation=False):
-        # Initial conv
+
         x = self.initial_conv(ecg_signal)
-        
-        # Residual blocks
         for block in self.residual_blocks:
             x = block(x)
-        
-        # Global average pooling
-        z = self.avgpool(x).squeeze(-1)  # (B, C)
-        
-        # RR concatenate
+
+        z = self.avgpool(x).squeeze(-1)
+
         if rr_remove_ablation:
             rr_features = torch.zeros_like(rr_features)
-        
-        # Classification
-        logits = self.fc(torch.cat([z, rr_features], dim=1))
+
+        # ✅ Fusion 적용
+        fused = self.fusion(z, rr_features)
+
+        logits = self.fc(fused)
         return logits, None
 
 
 class ImprovedDeepResidualCNN_CrossAttention(nn.Module):
-    """
-    B2_improved: Improved Deep Residual CNN (Cross-Attention)
-    RR Query attends to ECG sequence from residual blocks
-    """
-    def __init__(self, nOUT, n_pid, in_channels=1, out_ch=48, mid_ch=None, n_rr=7, num_heads=9):
+    def __init__(self, nOUT, n_pid,
+                 in_channels=1, out_ch=48,
+                 n_rr=7,
+                 num_heads=1,
+                 fusion_type="mhca",
+                 **fusion_kwargs):
         super().__init__()
-        self.out_ch = out_ch
-        
-        # Initial convolution with multiple kernel sizes
+
         self.initial_conv = MultiKernelConvBlock(in_channels, out_ch // 3, base_kernel_size=28)
-        
-        # 8 Residual blocks
+
         self.residual_blocks = nn.ModuleList()
-        
-        kernel_configs = [
-            (32, 34),   # Block 0
-            (32, 34),   # Block 1
-            (30, 36),   # Block 2
-            (30, 36),   # Block 3
-            (30, 36),   # Block 4
-            (30, 36),   # Block 5
-            (30, 36),   # Block 6
-            (30, 36),   # Block 7
-        ]
-        
+        kernel_configs = [(32,34),(32,34),(30,36),(30,36),(30,36),(30,36),(30,36),(30,36)]
+
         in_ch = out_ch * 3
-        for i, (k1, k2) in enumerate(kernel_configs):
+        for i,(k1,k2) in enumerate(kernel_configs):
             downsample = (i % 2 == 1)
-            block = ImprovedResidualBlock(in_ch, k1, k2, out_ch, downsample=downsample)
-            self.residual_blocks.append(block)
-            in_ch = out_ch * 3
-        
-        # RR Encoder -> Query embedding
-        self.rr_encoder = nn.Linear(n_rr, out_ch * 3)
-        
-        # Cross-Attention (Query: RR, Key/Value: ECG sequence)
-        self.mha_cross = nn.MultiheadAttention(out_ch * 3, num_heads, dropout=0.2)
-        
-        # Global average pooling
+            self.residual_blocks.append(
+                ImprovedResidualBlock(in_ch, k1, k2, out_ch, downsample=downsample)
+            )
+
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-        
-        # Classifier
+
+        # ✅ Fusion block (Gated MHCA)
+        self.fusion = get_fusion_block(
+            fusion_type,
+            emb_dim=out_ch * 3,
+            rr_dim=n_rr,
+            num_heads=num_heads,
+            **fusion_kwargs
+        )
+
+        fusion_out_dim = 2 * (out_ch * 3)
+
         self.fc = nn.Sequential(
-            nn.Linear(out_ch * 3, 360),
+            nn.Linear(fusion_out_dim, 360),
             nn.LayerNorm(360),
-            nn.LeakyReLU(),
+            nn.GELU(),
             nn.Dropout(0.2),
             nn.Linear(360, nOUT)
         )
-    
+
     def forward(self, ecg_signal, rr_features, rr_remove_ablation=False):
-        # Initial conv
+
         x = self.initial_conv(ecg_signal)
-        
-        # Residual blocks
         for block in self.residual_blocks:
             x = block(x)
-        
-        # Prepare ECG sequence for cross-attention (L, B, C)
-        x_seq = x.permute(2, 0, 1)  # (L, B, C)
-        
-        # RR encoding -> Query
-        rr_emb = self.rr_encoder(rr_features).unsqueeze(0)  # (1, B, C)
+
+        z = self.avgpool(x).squeeze(-1)
+
         if rr_remove_ablation:
-            rr_emb = torch.zeros_like(rr_emb)
-        
-        # Cross-attention (RR attends to ECG)
-        z, attn = self.mha_cross(rr_emb, x_seq, x_seq)
-        z = z.squeeze(0)  # (B, C)
-        
-        # Classification
-        logits = self.fc(z)
-        return logits, attn
+            rr_features = torch.zeros_like(rr_features)
+
+        # ✅ Fusion 적용
+        fused = self.fusion(z, rr_features)
+
+        logits = self.fc(fused)
+
+        return logits, None
