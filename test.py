@@ -11,6 +11,7 @@ from sklearn.metrics import (
     recall_score, f1_score, roc_auc_score)
 
 def evaluate(
+    
     model,
     test_loader,
     device,
@@ -318,6 +319,9 @@ def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     weighted_f1 = np.sum(per_class_f1 * class_weights)
     weighted_accuracy = np.sum(per_class_accuracy * class_weights)
 
+    # G-Mean = (∏ Sensitivity_i)^(1/n_classes)
+    gmean = float(np.prod(np.maximum(per_class_recall, 1e-6)) ** (1.0 / n_classes))
+
     return {
         'confusion_matrix': cm,
         'overall_accuracy': overall_accuracy,
@@ -336,6 +340,7 @@ def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         'weighted_specificity': weighted_specificity,
         'weighted_accuracy': weighted_accuracy,
         'weighted_f1': weighted_f1,
+        'gmean': gmean,
     }
 
 
@@ -360,6 +365,8 @@ def print_metrics(metrics: dict, classes: list) -> None:
     print(f"{'Weighted':<10} {metrics['weighted_prec']:<12.4f} "
           f"{metrics['weighted_recall']:<12.4f} "
           f"{metrics['weighted_f1']:<12.4f}")
+    if 'gmean' in metrics:
+        print(f"\n  G-Mean: {metrics['gmean']:.4f}")
     print("=" * 80)
 
 

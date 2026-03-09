@@ -36,7 +36,7 @@ def get_model_type(exp_name: str) -> str:
 # 분석용 설정 (main_analysis.py에서 사용)
 # =============================================================================
 # 분석할 실험 폴더 (예: experiment_20260115_143000_baseline)
-ANALYSIS_EXP_DIR = "./ECG_Results/experiment_20260115_143000_baseline"
+ANALYSIS_EXP_DIR = "./results/experiments/experiment_20260115_143000_baseline"
 # 분석할 모델 파일명 (best_model_auprc, best_model_wf1, best_model_wrecall, 또는 epoch_30)
 ANALYSIS_MODEL_TYPE = "best_model_auprc"
 
@@ -44,7 +44,15 @@ ANALYSIS_MODEL_TYPE = "best_model_auprc"
 # Paths
 # =============================================================================
 DATA_PATH = './data/mit-bih-arrhythmia-database-1.0.0/'
-OUTPUT_PATH = './ECG_Results/'
+OUTPUT_PATH = './results/experiments/'
+TEMPLATE_PATH = './templates/'
+
+# 자동 실험 결과 경로
+AUTO_RESULTS_PATH = './results/auto_results/'
+DUAL_BEST_PATH = './results/dual_best/'
+FEATURE_COMPARISON_PATH = './results/feature_comparison/'
+ANALYSIS_RESULTS_PATH = './results/analysis/'
+MULTI_SEED_PATH = './results/multi_seed/'
 
 # =============================================================================
 # Hyperparameters
@@ -108,9 +116,18 @@ LABEL_GROUP_MAP = {
 # =============================================================================
 # Data Split (Chazal)
 # =============================================================================
+
+# DS1 전체 (22명) - * 실험용
+DS1_FULL = [
+    '101', '106', '108', '109', '112', '115', '116', '118', '119',
+    '122', '201', '203', '209', '215', '223', '230', '208',
+    '114', '124', '205', '207', '220'
+]
+
+# DS1-1 Train (17명), DS1-2 Valid (5명) - @ 실험용
 DS1_TRAIN = [
     '101', '106', '108', '109', '112', '115', '116', '118', '119',
-    '122', '201', '203', '209', '215', '223', '230', '208' ,           
+    '122', '201', '203', '209', '215', '223', '230', '208',           
 ]
 DS1_VALID = [
     '114', '124', '205', '207', '220'

@@ -1,9 +1,10 @@
 
+import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 
 from config import DATA_PATH, VALID_LEADS, OUT_LEN, BATCH_SIZE, DS1_TRAIN, DS2_TEST
-from utils import extract_beats_and_rr_from_records
+from utils import extract_beats_and_rr_from_records, _build_x3
 
 # =============================================================================
 # PyTorch Dataset
@@ -68,6 +69,77 @@ def get_dataloaders(train_data, train_rr, train_labels, patient_id, sample_id,
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     return train_loader, test_loader
+
+
+def get_dataloaders_from_indices(
+    data: np.ndarray,
+    rr: np.ndarray,
+    labels: np.ndarray,
+    patient_ids: np.ndarray,
+    sample_ids: np.ndarray,
+    train_idx: np.ndarray,
+    valid_idx: np.ndarray,
+    test_idx: np.ndarray,
+    batch_size: int = BATCH_SIZE,
+    dataset_cls=None,
+) -> tuple:
+    """
+    intra-patient split 인덱스로 train/valid/test DataLoader 생성.
+    dataset_cls: None이면 ECGDataset 사용
+    """
+    if dataset_cls is None:
+        dataset_cls = ECGDataset
+
+    full_dataset = dataset_cls(data, rr, labels, patient_ids, sample_ids)
+
+    train_loader = DataLoader(Subset(full_dataset, train_idx), batch_size=batch_size, shuffle=True)
+    valid_loader = DataLoader(Subset(full_dataset, valid_idx), batch_size=batch_size, shuffle=False)
+    test_loader  = DataLoader(Subset(full_dataset, test_idx),  batch_size=batch_size, shuffle=False)
+
+    return train_loader, valid_loader, test_loader
+
+
+# =============================================================================
+# MACN Dataset (3-channel input: ECG + RR broadcast)
+# =============================================================================
+
+class MACNDataset(Dataset):
+    """
+    MACN용 Dataset.
+    ecg_raw: (N, 128) — raw ECG segments
+    rr_3dim: (N, 3)   — [pre_rr, pre_rr_ratio, near_pre_rr_ratio]
+
+    __getitem__ returns:
+        x3         (3, 128) — ECG + broadcast RR channels
+        rr_3dim    (3,)     — RR features (for model's rr_encoder)
+        label      (,)
+        patient_id (,)
+        idx        (,)
+    """
+
+    def __init__(self, ecg_raw, rr_3dim, labels, patient_ids, sample_ids):
+        # ecg_raw: (N, 128), rr_3dim: (N, 3)
+        self.ecg_raw = torch.FloatTensor(ecg_raw)       # (N, 128)
+        self.rr_3dim = torch.FloatTensor(rr_3dim)       # (N, 3)
+        self.labels = torch.LongTensor(labels)
+        self.patient_ids = torch.LongTensor(patient_ids)
+        self.sample_ids = sample_ids  # keep as numpy for Subset compatibility
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        ecg_seg = self.ecg_raw[idx].numpy()              # (128,)
+        pre_rr_ratio    = float(self.rr_3dim[idx, 1])
+        near_pre_rr_ratio = float(self.rr_3dim[idx, 2])
+
+        x3 = torch.FloatTensor(_build_x3(ecg_seg, pre_rr_ratio, near_pre_rr_ratio))  # (3, 128)
+
+        return (x3,
+                self.rr_3dim[idx],
+                self.labels[idx],
+                self.patient_ids[idx],
+                idx)
 
 
 

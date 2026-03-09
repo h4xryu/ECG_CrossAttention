@@ -4,63 +4,59 @@ import torch
 import torch.nn as nn
 import numpy as np
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_recall_fscore_support
-import torch.nn.functional as F
 
 
 def train_one_epoch(model: nn.Module, train_loader, alpha1: float, alpha2: float,
-                    optimizer: torch.optim.Optimizer, device: torch.device) -> tuple:
+                    optimizer: torch.optim.Optimizer, device: torch.device,
+                    criterion=None) -> tuple:
+    """
+    criterion: 손실함수 객체 (None이면 순수 CrossEntropyLoss)
+               FocalLoss 등 utils.FocalLoss 인스턴스 전달 가능
+    alpha1, alpha2: 하위 호환 유지용 (Poly2Loss 제거됨, 미사용)
+    """
     model.train()
     total_loss = 0.0
     y_pred, y_true = [], []
-    y_probs_all = []  # For AUPRC/AUROC
-    
-    p_t_n_all = []  # N 클래스
-    p_t_s_all = []  # S 클래스
-    p_t_v_all = []  # V 클래스
-    p_t_f_all = []  # F 클래스
-    
+    y_probs_all = []
+
+    p_t_n_all = []
+    p_t_s_all = []
+    p_t_v_all = []
+    p_t_f_all = []
+
+    if criterion is None:
+        criterion = nn.CrossEntropyLoss()
+
     for batch in train_loader:
         ecg_inputs, rr_features, labels, pids, _ = batch
-        ecg_inputs = ecg_inputs.to(device)
+        ecg_inputs  = ecg_inputs.to(device)
         rr_features = rr_features.to(device)
-        labels = labels.to(device)
-        
+        labels      = labels.to(device)
+
         optimizer.zero_grad()
         logits, _ = model(ecg_inputs, rr_features, rr_remove_ablation=False)
         probs = torch.softmax(logits, dim=1)
-        p_t = probs[torch.arange(len(labels)), labels]  # (B,)
-        
-        # Store predictions and probabilities
+        p_t   = probs[torch.arange(len(labels)), labels]
+
         preds = torch.argmax(logits, dim=1)
         y_pred.extend(preds.cpu().numpy())
         y_true.extend(labels.cpu().numpy())
         y_probs_all.append(probs.detach().cpu().numpy())
-        
-        # Collect p_t per class (클래스별 confidence 수집)
+
         n_mask = (labels == 0)
-        if n_mask.any():
-            p_t_n_all.append(p_t[n_mask].detach().cpu())
-        
+        if n_mask.any(): p_t_n_all.append(p_t[n_mask].detach().cpu())
         s_mask = (labels == 1)
-        if s_mask.any():
-            p_t_s_all.append(p_t[s_mask].detach().cpu())
-        
+        if s_mask.any(): p_t_s_all.append(p_t[s_mask].detach().cpu())
         v_mask = (labels == 2)
-        if v_mask.any():
-            p_t_v_all.append(p_t[v_mask].detach().cpu())
-        
+        if v_mask.any(): p_t_v_all.append(p_t[v_mask].detach().cpu())
         f_mask = (labels == 3)
-        if f_mask.any():
-            p_t_f_all.append(p_t[f_mask].detach().cpu())
-        
-        # Loss calculation: CE + α₁(1-p_t) + α₂(1-p_t)²
-        ce_loss = F.cross_entropy(logits, labels, reduction='none')
-        poly_term = alpha1 * (1 - p_t) + alpha2 * (1 - p_t)**2
-        loss = (ce_loss + poly_term).mean()
-        
+        if f_mask.any(): p_t_f_all.append(p_t[f_mask].detach().cpu())
+
+        # 순수 CE (또는 전달된 criterion)
+        loss = criterion(logits, labels)
         loss.backward()
         optimizer.step()
-        
+
         total_loss += loss.item()
     
     # Calculate metrics
@@ -118,56 +114,58 @@ def train_one_epoch(model: nn.Module, train_loader, alpha1: float, alpha2: float
             p_t_n_all, p_t_s_all, p_t_v_all, p_t_f_all)
 
 
-def validate(model: nn.Module, valid_loader, alpha1: float, alpha2: float, device: torch.device) -> tuple:
-    """Validation function"""
+def validate(model: nn.Module, valid_loader, alpha1: float, alpha2: float,
+             device: torch.device, criterion=None) -> tuple:
+    """Validation function — criterion: None이면 CE 사용"""
     model.eval()
     total_loss = 0.0
     y_pred, y_true = [], []
     y_probs_all = []
-    
+
     p_t_n_all = []
     p_t_s_all = []
     p_t_v_all = []
     p_t_f_all = []
-    
+
+    if criterion is None:
+        criterion = nn.CrossEntropyLoss()
+
     with torch.no_grad():
         for batch in valid_loader:
             ecg_inputs, rr_features, labels, pids, _ = batch
             ecg_inputs = ecg_inputs.to(device)
             rr_features = rr_features.to(device)
             labels = labels.to(device)
-            
+
             logits, _ = model(ecg_inputs, rr_features, rr_remove_ablation=False)
             probs = torch.softmax(logits, dim=1)
             p_t = probs[torch.arange(len(labels)), labels]
-            
+
             # Store predictions and probabilities
             preds = torch.argmax(logits, dim=1)
             y_pred.extend(preds.cpu().numpy())
             y_true.extend(labels.cpu().numpy())
             y_probs_all.append(probs.cpu().numpy())
-            
+
             # Collect p_t per class
             n_mask = (labels == 0)
             if n_mask.any():
                 p_t_n_all.append(p_t[n_mask].cpu())
-            
+
             s_mask = (labels == 1)
             if s_mask.any():
                 p_t_s_all.append(p_t[s_mask].cpu())
-            
+
             v_mask = (labels == 2)
             if v_mask.any():
                 p_t_v_all.append(p_t[v_mask].cpu())
-            
+
             f_mask = (labels == 3)
             if f_mask.any():
                 p_t_f_all.append(p_t[f_mask].cpu())
-            
+
             # Loss calculation (for monitoring)
-            ce_loss = F.cross_entropy(logits, labels, reduction='none')
-            poly_term = alpha1 * (1 - p_t) + alpha2 * (1 - p_t)**2
-            loss = (ce_loss + poly_term).mean()
+            loss = criterion(logits, labels)
             
             total_loss += loss.item()
     
